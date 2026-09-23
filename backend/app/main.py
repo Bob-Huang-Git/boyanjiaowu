@@ -12,6 +12,7 @@ from app.modules.attachments.router import router as attachments_router
 from app.modules.exam.router import router as exam_router
 from app.modules.finance.entitlements import router as entitlement_router
 from app.modules.finance.router import router as finance_router
+from app.modules.funding.allowances import router as allowance_router
 from app.modules.funding.router import router as funding_router
 from app.modules.iam.router import Db, require_permission, router
 from app.modules.sprint1.router import router as sprint1_router
@@ -30,6 +31,7 @@ app.include_router(finance_router)
 app.include_router(entitlement_router)
 app.include_router(veterans_router)
 app.include_router(funding_router)
+app.include_router(allowance_router)
 
 
 @app.middleware("http")

@@ -376,7 +376,16 @@ def assess_funding_case(item_id: str, payload: AssessmentInput, request: Request
     db.flush()
     audit(db, user, request, "funding_case.assess", "funding_case", case.id, {"assessment_version": next_version, "status": payload.assessment_status})
     db.commit()
-    return {"id": record.id, "assessment_version": record.assessment_version, "assessment_status": record.assessment_status, "case_status": case.case_status}
+    # 顶层 id 必须是**资格案 id**：调用方下一条请求是 /funding-cases/{id}/...，
+    # 若把评定记录 id 放在顶层会让客户端直接 404。评定 id 单独给出。
+    return {
+        "id": case.id,
+        "case_id": case.id,
+        "case_status": case.case_status,
+        "assessment_id": record.id,
+        "assessment_version": record.assessment_version,
+        "assessment_status": record.assessment_status,
+    }
 
 
 @router.get("/funding-cases/{item_id}/assessments")
