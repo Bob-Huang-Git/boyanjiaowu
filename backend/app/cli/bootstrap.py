@@ -14,8 +14,8 @@ def main() -> None:
     if not username:
         raise SystemExit("Username is required")
     password = getpass.getpass("Administrator password: ")
-    if len(password) < 12:
-        raise SystemExit("Password must have at least 12 characters")
+    if len(password) < 6:
+        raise SystemExit("Password must have at least 6 characters")
     with Session(get_engine()) as db:
         if db.scalar(select(User).where(User.username == username)):
             raise SystemExit("Username already exists")

@@ -29,7 +29,7 @@ python -m app.cli.seed_finance
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-`.env` 中的 `DATABASE_URL=sqlite:///./data/app.db` 是本地默认值；不得填写真实生产密钥。创建管理员会交互读取密码，密码不会出现在命令历史中。后端地址为 `http://127.0.0.1:8000`，开发文档为 `http://127.0.0.1:8000/api/docs`，就绪检查为 `http://127.0.0.1:8000/api/health/ready`。
+`.env` 中的 `DATABASE_URL=sqlite:///./data/app.db` 是本地默认值；不得填写真实生产密钥。创建管理员会交互读取至少 6 位的密码，密码不会出现在命令历史中。后端地址为 `http://127.0.0.1:8000`，开发文档为 `http://127.0.0.1:8000/api/docs`，就绪检查为 `http://127.0.0.1:8000/api/health/ready`。
 
 `seed_demo` 只用于开发环境，幂等创建“人工智能训练师”和“全媒体运营”演示课程及其已发布版本；不导入真实学员数据。
 
