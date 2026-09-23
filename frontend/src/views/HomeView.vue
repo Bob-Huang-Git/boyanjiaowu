@@ -15,6 +15,7 @@ const menu = [
   { label: '证书', route: 'certificates', permission: 'certificate.read' },
   { label: '财务', route: 'finance', permission: 'receivable.read' },
   { label: '教师结算', route: 'teacher-settlements', permission: 'teacher_settlement.read' },
+  { label: '政府项目与补贴', route: 'funding', permission: 'funding_case.read' },
   { label: '系统管理', permission: 'system.admin' },
 ]
 
@@ -38,7 +39,7 @@ async function logout() {
     </el-aside>
     <el-container>
       <el-header class="header"><span>{{ auth.user?.display_name }}</span><el-button text @click="logout">退出</el-button></el-header>
-      <el-main><h1>工作台</h1><p>学员、课程、教学、考试、证书与资金结算业务已接入。</p></el-main>
+      <el-main><h1>工作台</h1><p>学员、课程、教学、考试、证书、资金结算与政府补贴业务已接入。</p></el-main>
     </el-container>
   </el-container>
 </template>

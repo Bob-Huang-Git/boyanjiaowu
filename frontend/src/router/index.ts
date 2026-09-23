@@ -15,6 +15,7 @@ import ExamView from '../views/ExamView.vue'
 import CertificatesView from '../views/CertificatesView.vue'
 import FinanceView from '../views/FinanceView.vue'
 import TeacherSettlementView from '../views/TeacherSettlementView.vue'
+import FundingView from '../views/FundingView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -30,6 +31,7 @@ export const router = createRouter({
     { path: '/certificates', name: 'certificates', component: CertificatesView },
     { path: '/finance', name: 'finance', component: FinanceView },
     { path: '/teacher-settlements', name: 'teacher-settlements', component: TeacherSettlementView },
+    { path: '/funding', name: 'funding', component: FundingView },
     { path: '/imports/students', name: 'student-import', component: ImportsView },
     { path: '/login', name: 'login', component: LoginView },
     { path: '/403', name: 'forbidden', component: ForbiddenView },

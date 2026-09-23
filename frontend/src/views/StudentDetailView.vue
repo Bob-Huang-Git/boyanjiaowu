@@ -3,31 +3,304 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import StudentFundingPanel from '../components/StudentFundingPanel.vue'
 import { useAuthStore } from '../stores/auth'
 
-type Document = { id: string; document_status: string; version: number; valid_until?: string; category: { id: string; name: string }; file: { original_filename: string } }
-type ExamProgress = { enrollment_id: string; enrollment_no: unknown; course_name: unknown; exam_status: string; subjects: Record<string, any>[]; eligibility: { eligible: boolean; passed_subject_count: number; required_subject_count: number } }
-const route = useRoute(); const router = useRouter(); const auth = useAuthStore(); const student = ref<Record<string, unknown>>({}); const enrollments = ref<Record<string, unknown>[]>([]); const memberships = ref<Record<string, unknown>[]>([]); const documents = ref<Document[]>([]); const categories = ref<Record<string, unknown>[]>([]); const completeness = ref<Record<string, number>>({}); const examProgress = ref<ExamProgress[]>([]); const finance = ref<Record<string, any>>({ receivables: [], summary: {} }); const tab = ref(String(route.query.tab ?? 'basic')); const categoryId = ref(''); const selected = ref<File | null>(null); const uploading = ref(false); const replaceTarget = ref<Document | null>(null)
-const permissions = computed(() => new Set(auth.user?.permissions ?? [])); const can = (value: string) => permissions.value.has('system.admin') || permissions.value.has(value)
-function safeReturn() { const value = String(route.query.returnTo ?? '/students'); return value.startsWith('/') && !value.startsWith('//') ? value : '/students' }
-async function loadFiles() { const id = String(route.params.id); documents.value = (await api<{ items: Document[] }>(`/students/${id}/documents`)).items; categories.value = (await api<{ items: Record<string, unknown>[] }>('/document-categories')).items; completeness.value = (await api<{ summary: Record<string, number> }>(`/students/${id}/documents/completeness`)).summary; if (!categoryId.value && categories.value.length) categoryId.value = String(categories.value[0].id) }
-async function loadExams() { examProgress.value = await Promise.all(enrollments.value.map(async enrollment => { const progress = await api<Omit<ExamProgress, 'eligibility' | 'enrollment_no' | 'course_name'>>(`/enrollments/${enrollment.id}/exam-progress`); const eligibility = await api<ExamProgress['eligibility']>(`/enrollments/${enrollment.id}/certificate-eligibility`); return { ...progress, eligibility, enrollment_no: enrollment.enrollment_no, course_name: enrollment.course_name } })) }
-async function load() { const id = String(route.params.id); student.value = await api(`/students/${id}`); enrollments.value = (await api<{ items: Record<string, unknown>[] }>(`/students/${id}/enrollments`)).items; memberships.value = (await api<{ items: Record<string, unknown>[] }>(`/students/${id}/class-memberships`)).items; if (can('attachment.read')) await loadFiles(); if (can('exam.result.read')) await loadExams(); if (can('receivable.read')) finance.value = await api(`/students/${id}/financial-overview`) }
+type Document = {
+  id: string
+  document_status: string
+  version: number
+  valid_until?: string
+  category: { id: string; name: string }
+  file: { original_filename: string }
+}
+type ExamProgress = {
+  enrollment_id: string
+  enrollment_no: unknown
+  course_name: unknown
+  exam_status: string
+  subjects: Record<string, any>[]
+  eligibility: { eligible: boolean; passed_subject_count: number; required_subject_count: number }
+}
+
+const route = useRoute()
+const router = useRouter()
+const auth = useAuthStore()
+const student = ref<Record<string, unknown>>({})
+const enrollments = ref<Record<string, unknown>[]>([])
+const memberships = ref<Record<string, unknown>[]>([])
+const documents = ref<Document[]>([])
+const categories = ref<Record<string, unknown>[]>([])
+const completeness = ref<Record<string, number>>({})
+const examProgress = ref<ExamProgress[]>([])
+const finance = ref<Record<string, any>>({ receivables: [], summary: {} })
+const tab = ref(String(route.query.tab ?? 'basic'))
+const categoryId = ref('')
+const selected = ref<File | null>(null)
+const uploading = ref(false)
+const replaceTarget = ref<Document | null>(null)
+const permissions = computed(() => new Set(auth.user?.permissions ?? []))
+const can = (value: string) => permissions.value.has('system.admin') || permissions.value.has(value)
 const yuan = (cent: unknown) => `¥${(Number(cent || 0) / 100).toFixed(2)}`
-function choose(file: { raw: File }) { selected.value = file.raw; return false }
-async function upload() { if (!selected.value || !categoryId.value) return; uploading.value = true; try { const data = new FormData(); data.set('category_id', categoryId.value); data.set('file', selected.value); const path = replaceTarget.value ? `/student-documents/${replaceTarget.value.id}/replace` : `/students/${route.params.id}/documents`; await api(path, { method: 'POST', body: data }); selected.value = null; replaceTarget.value = null; ElMessage.success('资料已上传，等待审核'); await loadFiles() } catch (error) { ElMessage.error(String(error).includes('FILE_TOO_LARGE') ? '文件超过大小限制' : '上传失败，请检查资料分类和文件格式') } finally { uploading.value = false } }
-async function approve(item: Document) { await api(`/student-documents/${item.id}/approve`, { method: 'POST', body: JSON.stringify({ version: item.version }) }); ElMessage.success('已审核通过'); await loadFiles() }
-async function reject(item: Document) { try { const result = await ElMessageBox.prompt('请输入驳回原因', '驳回资料', { inputPattern: /.+/, inputErrorMessage: '必须填写原因' }); await api(`/student-documents/${item.id}/reject`, { method: 'POST', body: JSON.stringify({ version: item.version, reason: result.value }) }); ElMessage.success('已驳回'); await loadFiles() } catch { /* user cancelled */ } }
-function replace(item: Document) { replaceTarget.value = item; categoryId.value = item.category.id; ElMessage.info('请选择替代文件后上传，旧资料将保留在历史中') }
-function openDocument(item: Document, preview = false) { window.open(`/api/student-documents/${item.id}/${preview ? 'preview' : 'download'}`, '_blank', 'noopener') }
-async function draftResult(attempt: Record<string, any>, result_status: 'PASSED' | 'FAILED') { try { const prompt = await ElMessageBox.prompt('请输入分数，最多两位小数', result_status === 'PASSED' ? '录入合格成绩' : '录入不合格成绩', { inputPattern:/^\d{1,3}(\.\d{1,2})?$/, inputErrorMessage:'请输入有效分数' }); const score = Math.round(Number(prompt.value) * 100); await api(`/exam-attempts/${attempt.id}/draft-result`, { method:'PATCH', body:JSON.stringify({ score_value_scaled:score, score_scale:100, result_status, attendance_status:'PRESENT', version:attempt.version }) }); await loadExams(); ElMessage.success('成绩草稿已保存') } catch { /* cancelled or rejected */ } }
-async function submitResult(attempt: Record<string, any>) { await api(`/exam-attempts/${attempt.id}/submit-result`, { method:'POST', body:JSON.stringify({ version:attempt.version }) }); await loadExams(); ElMessage.success('成绩已提交复核') }
-async function confirmResult(attempt: Record<string, any>) { await api(`/exam-attempts/${attempt.id}/confirm-result`, { method:'POST', body:JSON.stringify({ version:attempt.version }) }); await loadExams(); ElMessage.success('成绩已官方确认') }
+
+function safeReturn() {
+  const value = String(route.query.returnTo ?? '/students')
+  return value.startsWith('/') && !value.startsWith('//') ? value : '/students'
+}
+
+async function loadFiles() {
+  const id = String(route.params.id)
+  documents.value = (await api<{ items: Document[] }>(`/students/${id}/documents`)).items
+  categories.value = (await api<{ items: Record<string, unknown>[] }>('/document-categories')).items
+  completeness.value = (await api<{ summary: Record<string, number> }>(`/students/${id}/documents/completeness`)).summary
+  if (!categoryId.value && categories.value.length) categoryId.value = String(categories.value[0].id)
+}
+
+async function loadExams() {
+  examProgress.value = await Promise.all(
+    enrollments.value.map(async (enrollment) => {
+      const progress = await api<Omit<ExamProgress, 'eligibility' | 'enrollment_no' | 'course_name'>>(`/enrollments/${enrollment.id}/exam-progress`)
+      const eligibility = await api<ExamProgress['eligibility']>(`/enrollments/${enrollment.id}/certificate-eligibility`)
+      return { ...progress, eligibility, enrollment_no: enrollment.enrollment_no, course_name: enrollment.course_name }
+    }),
+  )
+}
+
+async function load() {
+  const id = String(route.params.id)
+  student.value = await api(`/students/${id}`)
+  enrollments.value = (await api<{ items: Record<string, unknown>[] }>(`/students/${id}/enrollments`)).items
+  memberships.value = (await api<{ items: Record<string, unknown>[] }>(`/students/${id}/class-memberships`)).items
+  if (can('attachment.read')) await loadFiles()
+  if (can('exam.result.read')) await loadExams()
+  if (can('receivable.read')) finance.value = await api(`/students/${id}/financial-overview`)
+}
+
+function choose(file: { raw: File }) {
+  selected.value = file.raw
+  return false
+}
+
+async function upload() {
+  if (!selected.value || !categoryId.value) return
+  uploading.value = true
+  try {
+    const data = new FormData()
+    data.set('category_id', categoryId.value)
+    data.set('file', selected.value)
+    const path = replaceTarget.value
+      ? `/student-documents/${replaceTarget.value.id}/replace`
+      : `/students/${route.params.id}/documents`
+    await api(path, { method: 'POST', body: data })
+    selected.value = null
+    replaceTarget.value = null
+    ElMessage.success('资料已上传，等待审核')
+    await loadFiles()
+  } catch (error) {
+    ElMessage.error(String(error).includes('FILE_TOO_LARGE') ? '文件超过大小限制' : '上传失败，请检查资料分类和文件格式')
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function approve(item: Document) {
+  await api(`/student-documents/${item.id}/approve`, { method: 'POST', body: JSON.stringify({ version: item.version }) })
+  ElMessage.success('已审核通过')
+  await loadFiles()
+}
+
+async function reject(item: Document) {
+  try {
+    const result = await ElMessageBox.prompt('请输入驳回原因', '驳回资料', { inputPattern: /.+/, inputErrorMessage: '必须填写原因' })
+    await api(`/student-documents/${item.id}/reject`, { method: 'POST', body: JSON.stringify({ version: item.version, reason: result.value }) })
+    ElMessage.success('已驳回')
+    await loadFiles()
+  } catch {
+    // 用户取消输入。
+  }
+}
+
+function replace(item: Document) {
+  replaceTarget.value = item
+  categoryId.value = item.category.id
+  ElMessage.info('请选择替代文件后上传，旧资料将保留在历史中')
+}
+
+function openDocument(item: Document, preview = false) {
+  window.open(`/api/student-documents/${item.id}/${preview ? 'preview' : 'download'}`, '_blank', 'noopener')
+}
+
+async function draftResult(attempt: Record<string, any>, resultStatus: 'PASSED' | 'FAILED') {
+  try {
+    const prompt = await ElMessageBox.prompt('请输入分数，最多两位小数', resultStatus === 'PASSED' ? '录入合格成绩' : '录入不合格成绩', {
+      inputPattern: /^\d{1,3}(\.\d{1,2})?$/,
+      inputErrorMessage: '请输入有效分数',
+    })
+    const score = Math.round(Number(prompt.value) * 100)
+    await api(`/exam-attempts/${attempt.id}/draft-result`, {
+      method: 'PATCH',
+      body: JSON.stringify({ score_value_scaled: score, score_scale: 100, result_status: resultStatus, attendance_status: 'PRESENT', version: attempt.version }),
+    })
+    await loadExams()
+    ElMessage.success('成绩草稿已保存')
+  } catch {
+    // 用户取消输入。
+  }
+}
+
+async function submitResult(attempt: Record<string, any>) {
+  await api(`/exam-attempts/${attempt.id}/submit-result`, { method: 'POST', body: JSON.stringify({ version: attempt.version }) })
+  await loadExams()
+  ElMessage.success('成绩已提交复核')
+}
+
+async function confirmResult(attempt: Record<string, any>) {
+  await api(`/exam-attempts/${attempt.id}/confirm-result`, { method: 'POST', body: JSON.stringify({ version: attempt.version }) })
+  await loadExams()
+  ElMessage.success('成绩已官方确认')
+}
+
 onMounted(load)
 </script>
 
 <template>
-  <section><el-button text @click="router.push(safeReturn())">← 返回原列表</el-button><h1>{{ student.full_name }} <small>{{ student.student_no }}</small></h1><p>{{ student.phone_masked }} · {{ student.document_summary }} · {{ student.student_status }}</p><el-tabs v-model="tab"><el-tab-pane label="基本信息" name="basic"><el-descriptions :column="2" border><el-descriptions-item label="性别">{{ student.gender }}</el-descriptions-item><el-descriptions-item label="文化程度">{{ student.education_level || '—' }}</el-descriptions-item><el-descriptions-item label="来源渠道">{{ student.source_channel || '—' }}</el-descriptions-item></el-descriptions></el-tab-pane><el-tab-pane label="课程报名" name="enrollments"><el-table :data="enrollments"><el-table-column prop="enrollment_no" label="报名编号"/><el-table-column prop="course_name" label="课程"/><el-table-column prop="version_name" label="版本"/><el-table-column prop="lifecycle_status" label="状态"/></el-table></el-tab-pane><el-tab-pane label="班级经历" name="classes"><el-table :data="memberships"><el-table-column prop="class_code" label="班级编码"/><el-table-column prop="class_name" label="班级"/><el-table-column prop="membership_status" label="状态"/></el-table></el-tab-pane><el-tab-pane label="考试与证书" name="exams"><template v-if="can('exam.result.read')"><el-card v-for="item in examProgress" :key="String(item.enrollment_id)" class="exam-card"><h3>{{ item.course_name }} · {{ item.enrollment_no }} <el-tag>{{ item.exam_status }}</el-tag></h3><el-table :data="item.subjects"><el-table-column prop="subject_code" label="科目"/><el-table-column prop="subject_name" label="名称"/><el-table-column prop="attempt_count" label="尝试次数"/><el-table-column label="通过"><template #default="scope"><el-tag :type="scope.row.passed ? 'success' : 'warning'">{{ scope.row.passed ? `第 ${scope.row.passed_attempt_no} 次通过` : '待通过/补考' }}</el-tag></template></el-table-column><el-table-column label="完整历史" min-width="460"><template #default="scope"><span v-for="attempt in scope.row.attempts" :key="attempt.id" class="attempt">第{{ attempt.attempt_no }}次 {{ attempt.attempt_type }} · {{ attempt.score_value_scaled == null ? '—' : (attempt.score_value_scaled / attempt.score_scale).toFixed(2) }} · {{ attempt.result_status }} · {{ attempt.result_confirm_status }} <template v-if="attempt.result_confirm_status === 'DRAFT'"><el-button text size="small" @click="draftResult(attempt,'PASSED')">录入通过</el-button><el-button text size="small" @click="draftResult(attempt,'FAILED')">录入未通过</el-button><el-button v-if="attempt.result_status !== 'PENDING'" text size="small" @click="submitResult(attempt)">提交</el-button></template><el-button v-if="attempt.result_confirm_status === 'SUBMITTED'" text size="small" type="success" @click="confirmResult(attempt)">官方确认</el-button></span></template></el-table-column></el-table><p>证书资格：{{ item.eligibility?.eligible ? '已具备' : `未具备（已通过 ${item.eligibility?.passed_subject_count}/${item.eligibility?.required_subject_count}）` }}</p><el-button v-if="item.exam_status !== 'PASSED'" @click="router.push('/classes')">进入班级与滚班工作台</el-button></el-card></template><el-empty v-else description="无考试查看权限"/></el-tab-pane><el-tab-pane label="资料附件" name="files"><template v-if="can('attachment.read')"><div class="summary"><el-tag type="success">已齐全 {{ completeness.COMPLETE || 0 }}</el-tag><el-tag type="warning">待审核 {{ completeness.PENDING_REVIEW || 0 }}</el-tag><el-tag type="danger">缺失 {{ completeness.MISSING || 0 }}</el-tag><el-tag type="danger">已驳回 {{ completeness.REJECTED || 0 }}</el-tag></div><el-card v-if="can('attachment.upload')" class="upload"><el-select v-model="categoryId" placeholder="选择资料分类"><el-option v-for="item in categories" :key="String(item.id)" :label="String(item.category_name)" :value="String(item.id)"/></el-select><el-upload :auto-upload="false" :show-file-list="true" :on-change="choose" :limit="1"><el-button>选择文件</el-button><template #tip>{{ replaceTarget ? '正在替换：旧资料会保留在历史中。' : '允许 PDF、JPEG、PNG、WEBP；文件大小由资料分类限制。' }}</template></el-upload><el-button type="primary" :loading="uploading" :disabled="!selected" @click="upload">{{ replaceTarget ? '确认替换' : '上传资料' }}</el-button></el-card><el-table :data="documents"><el-table-column label="分类"><template #default="scope">{{ scope.row.category.name }}</template></el-table-column><el-table-column label="文件"><template #default="scope">{{ scope.row.file.original_filename }}</template></el-table-column><el-table-column prop="document_status" label="状态"/><el-table-column prop="valid_until" label="有效期"/><el-table-column label="操作"><template #default="scope"><el-button text @click="openDocument(scope.row, true)">预览</el-button><el-button text @click="openDocument(scope.row)">下载</el-button><el-button v-if="can('attachment.replace')" text @click="replace(scope.row)">替换</el-button><el-button v-if="can('attachment.review') && scope.row.document_status === 'PENDING_REVIEW'" text type="success" @click="approve(scope.row)">通过</el-button><el-button v-if="can('attachment.review') && scope.row.document_status === 'PENDING_REVIEW'" text type="danger" @click="reject(scope.row)">驳回</el-button></template></el-table-column></el-table></template><el-empty v-else description="无资料附件查看权限"/></el-tab-pane><el-tab-pane label="操作记录" name="audit"><el-empty description="操作审计摘要将在后续界面开放"/></el-tab-pane></el-tabs></section>
+  <section>
+    <el-button text @click="router.push(safeReturn())">← 返回原列表</el-button>
+    <h1>{{ student.full_name }} <small>{{ student.student_no }}</small></h1>
+    <p>{{ student.phone_masked }} · {{ student.document_summary }} · {{ student.student_status }}</p>
+    <el-tabs v-model="tab">
+      <el-tab-pane label="基本信息" name="basic">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="性别">{{ student.gender }}</el-descriptions-item>
+          <el-descriptions-item label="文化程度">{{ student.education_level || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="来源渠道">{{ student.source_channel || '—' }}</el-descriptions-item>
+        </el-descriptions>
+      </el-tab-pane>
+
+      <el-tab-pane label="课程报名" name="enrollments">
+        <el-table :data="enrollments">
+          <el-table-column prop="enrollment_no" label="报名编号" />
+          <el-table-column prop="course_name" label="课程" />
+          <el-table-column prop="version_name" label="版本" />
+          <el-table-column prop="lifecycle_status" label="状态" />
+        </el-table>
+      </el-tab-pane>
+
+      <el-tab-pane label="班级经历" name="classes">
+        <el-table :data="memberships">
+          <el-table-column prop="class_code" label="班级编码" />
+          <el-table-column prop="class_name" label="班级" />
+          <el-table-column prop="membership_status" label="状态" />
+        </el-table>
+      </el-tab-pane>
+
+      <el-tab-pane label="考试与证书" name="exams">
+        <template v-if="can('exam.result.read')">
+          <el-card v-for="item in examProgress" :key="String(item.enrollment_id)" class="exam-card">
+            <h3>{{ item.course_name }} · {{ item.enrollment_no }} <el-tag>{{ item.exam_status }}</el-tag></h3>
+            <el-table :data="item.subjects">
+              <el-table-column prop="subject_code" label="科目" />
+              <el-table-column prop="subject_name" label="名称" />
+              <el-table-column prop="attempt_count" label="尝试次数" />
+              <el-table-column label="通过">
+                <template #default="scope"><el-tag :type="scope.row.passed ? 'success' : 'warning'">{{ scope.row.passed ? `第 ${scope.row.passed_attempt_no} 次通过` : '待通过/补考' }}</el-tag></template>
+              </el-table-column>
+              <el-table-column label="完整历史" min-width="460">
+                <template #default="scope">
+                  <span v-for="attempt in scope.row.attempts" :key="attempt.id" class="attempt">
+                    第{{ attempt.attempt_no }}次 {{ attempt.attempt_type }} ·
+                    {{ attempt.score_value_scaled == null ? '—' : (attempt.score_value_scaled / attempt.score_scale).toFixed(2) }} ·
+                    {{ attempt.result_status }} · {{ attempt.result_confirm_status }}
+                    <template v-if="attempt.result_confirm_status === 'DRAFT'">
+                      <el-button text size="small" @click="draftResult(attempt, 'PASSED')">录入通过</el-button>
+                      <el-button text size="small" @click="draftResult(attempt, 'FAILED')">录入未通过</el-button>
+                      <el-button v-if="attempt.result_status !== 'PENDING'" text size="small" @click="submitResult(attempt)">提交</el-button>
+                    </template>
+                    <el-button v-if="attempt.result_confirm_status === 'SUBMITTED'" text size="small" type="success" @click="confirmResult(attempt)">官方确认</el-button>
+                  </span>
+                </template>
+              </el-table-column>
+            </el-table>
+            <p>证书资格：{{ item.eligibility?.eligible ? '已具备' : `未具备（已通过 ${item.eligibility?.passed_subject_count}/${item.eligibility?.required_subject_count}）` }}</p>
+            <el-button v-if="item.exam_status !== 'PASSED'" @click="router.push('/classes')">进入班级与滚班工作台</el-button>
+          </el-card>
+        </template>
+        <el-empty v-else description="无考试查看权限" />
+      </el-tab-pane>
+
+      <el-tab-pane v-if="can('receivable.read')" label="财务" name="finance">
+        <el-descriptions :column="3" border class="finance-summary">
+          <el-descriptions-item label="校方收入应收">{{ yuan(finance.summary?.school_revenue_payable_cent) }}</el-descriptions-item>
+          <el-descriptions-item label="代收应收">{{ yuan(finance.summary?.agency_collection_payable_cent) }}</el-descriptions-item>
+          <el-descriptions-item label="未收合计">{{ yuan(finance.summary?.outstanding_cent) }}</el-descriptions-item>
+        </el-descriptions>
+        <el-table :data="finance.receivables || []">
+          <el-table-column prop="receivable_no" label="应收编号" />
+          <el-table-column prop="receivable_type" label="类型" />
+          <el-table-column label="应收"><template #default="scope">{{ yuan(scope.row.payable_amount_cent) }}</template></el-table-column>
+          <el-table-column label="已分配"><template #default="scope">{{ yuan(scope.row.allocated_amount_cent) }}</template></el-table-column>
+          <el-table-column prop="receivable_status" label="状态" />
+        </el-table>
+      </el-tab-pane>
+
+      <el-tab-pane
+        v-if="can('veteran_identity.read') || can('funding_case.read') || can('funding.allowance.read')"
+        label="退役与资助"
+        name="funding"
+      >
+        <StudentFundingPanel :student-id="String(route.params.id)" :enrollments="enrollments" />
+      </el-tab-pane>
+
+      <el-tab-pane label="资料附件" name="files">
+        <template v-if="can('attachment.read')">
+          <div class="summary">
+            <el-tag type="success">已齐全 {{ completeness.COMPLETE || 0 }}</el-tag>
+            <el-tag type="warning">待审核 {{ completeness.PENDING_REVIEW || 0 }}</el-tag>
+            <el-tag type="danger">缺失 {{ completeness.MISSING || 0 }}</el-tag>
+            <el-tag type="danger">已驳回 {{ completeness.REJECTED || 0 }}</el-tag>
+          </div>
+          <el-card v-if="can('attachment.upload')" class="upload">
+            <el-select v-model="categoryId" placeholder="选择资料分类">
+              <el-option v-for="item in categories" :key="String(item.id)" :label="String(item.category_name)" :value="String(item.id)" />
+            </el-select>
+            <el-upload :auto-upload="false" :show-file-list="true" :on-change="choose" :limit="1">
+              <el-button>选择文件</el-button>
+              <template #tip>{{ replaceTarget ? '正在替换：旧资料会保留在历史中。' : '允许 PDF、JPEG、PNG、WEBP；文件大小由资料分类限制。' }}</template>
+            </el-upload>
+            <el-button type="primary" :loading="uploading" :disabled="!selected" @click="upload">{{ replaceTarget ? '确认替换' : '上传资料' }}</el-button>
+          </el-card>
+          <el-table :data="documents">
+            <el-table-column label="分类"><template #default="scope">{{ scope.row.category.name }}</template></el-table-column>
+            <el-table-column label="文件"><template #default="scope">{{ scope.row.file.original_filename }}</template></el-table-column>
+            <el-table-column prop="document_status" label="状态" />
+            <el-table-column prop="valid_until" label="有效期" />
+            <el-table-column label="操作">
+              <template #default="scope">
+                <el-button text @click="openDocument(scope.row, true)">预览</el-button>
+                <el-button text @click="openDocument(scope.row)">下载</el-button>
+                <el-button v-if="can('attachment.replace')" text @click="replace(scope.row)">替换</el-button>
+                <el-button v-if="can('attachment.review') && scope.row.document_status === 'PENDING_REVIEW'" text type="success" @click="approve(scope.row)">通过</el-button>
+                <el-button v-if="can('attachment.review') && scope.row.document_status === 'PENDING_REVIEW'" text type="danger" @click="reject(scope.row)">驳回</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+        <el-empty v-else description="无资料附件查看权限" />
+      </el-tab-pane>
+
+      <el-tab-pane label="操作记录" name="audit">
+        <el-empty description="操作审计摘要将在后续界面开放" />
+      </el-tab-pane>
+    </el-tabs>
+  </section>
 </template>
 
-<style scoped>.summary{display:flex;gap:8px;margin-bottom:12px}.upload{display:flex;gap:12px;align-items:center;margin-bottom:16px}.exam-card{margin-bottom:16px}.attempt{display:block;margin:4px 0}h1{margin-bottom:4px}small,p{color:#667085}</style>
+<style scoped>
+.summary { display: flex; gap: 8px; margin-bottom: 12px; }
+.upload { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+.exam-card { margin-bottom: 16px; }
+.attempt { display: block; margin: 4px 0; }
+.finance-summary { margin-bottom: 16px; }
+h1 { margin-bottom: 4px; }
+small, p { color: #667085; }
+</style>
