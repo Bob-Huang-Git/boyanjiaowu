@@ -1,0 +1,24 @@
+[Unit]
+Description=Boyan training office FastAPI service
+After=network.target
+
+[Service]
+Type=simple
+User=boyan
+Group=boyan
+WorkingDirectory=/opt/boyan/current/backend
+EnvironmentFile=/etc/boyan/boyan.env
+ExecStart=/opt/boyan/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=append:/var/log/boyan/app.log
+StandardError=append:/var/log/boyan/error.log
+
+[Install]
+WantedBy=multi-user.target
+

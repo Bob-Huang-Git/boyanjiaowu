@@ -1,0 +1,13 @@
+[Unit]
+Description=Create a consistent Boyan SQLite backup
+After=boyan.service
+
+[Service]
+Type=oneshot
+User=boyan
+Group=boyan
+EnvironmentFile=/etc/boyan/boyan.env
+ExecStart=/opt/boyan/venv/bin/python /opt/boyan/current/scripts/backup_db.py --database /var/lib/boyan/app.db --output-dir /var/lib/boyan/backups
+StandardOutput=append:/var/log/boyan/backup.log
+StandardError=append:/var/log/boyan/backup.log
+
