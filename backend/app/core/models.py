@@ -1362,3 +1362,593 @@ class TrainingEntitlementEntry(RecordMixin, Base):
         ForeignKey("training_entitlement_entries.id")
     )
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+# ---------------------------------------------------------------------------
+# Prompt 6：退役士兵身份、政府项目资格、餐宿补贴与学校垫资
+#
+# 分组对应设计原文 Prompt 6 的第一至第七节：
+#   一、身份层         VeteranIdentity / ...Evidence / ...Verification / VeteranAttributeHistory
+#   二、项目和资格     FundingProgram / ...Version / FundingSource / ProgramFundingSource
+#                      FundingCase / FundingCaseComponent / EligibilityAssessment / EligibilityEvidence
+#   三、学校成本       ProjectCost / ProjectCostAllocation
+#   四、每日出勤事实   AttendanceDayFact
+#   五、住宿事实       LodgingStay / LodgingNightFact
+#   六、政策规则       AllowancePolicy
+#   七、权益与支付     SubsidyEntitlement / EntitlementAdjustment / AllowancePayable / AllowancePayment
+#
+# 设计约束（Prompt 6 第四、五、七节）：
+#   - 学校成本、补贴权益、学校应付、实际支付**四个金额互不混用**，各自独立字段与表。
+#   - 同一天多个课次只能形成一条当前有效每日事实（部分唯一索引保证）。
+#   - 住宿补贴不能仅凭 AttendanceDayFact 产生（LodgingNightFact 独立事实源）。
+# ---------------------------------------------------------------------------
+
+
+class VeteranIdentity(RecordMixin, Base):
+    """退役士兵身份主档：学员级、相对稳定的身份信息。
+
+    ``retirement_card_no_*`` 三件套复用项目既有 PII 约定：
+    密文（AES-GCM）+ 查重盲索引（HMAC-SHA-256）+ 脱敏展示值，另存 key_version 以支持轮换。
+    """
+
+    __tablename__ = "veteran_identities"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "student_id"),
+        Index("ix_veteran_identities_hmac", "organization_id", "retirement_card_no_hmac"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    retirement_card_no_encrypted: Mapped[str | None] = mapped_column(Text)
+    retirement_card_no_hmac: Mapped[str | None] = mapped_column(String(128))
+    retirement_card_no_masked: Mapped[str | None] = mapped_column(String(60))
+    retirement_card_no_key_version: Mapped[str | None] = mapped_column(String(20))
+    retired_on: Mapped[date | None] = mapped_column(Date)
+    service_branch: Mapped[str | None] = mapped_column(String(80))
+    identity_status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)
+    verified_status: Mapped[str] = mapped_column(String(30), default="UNVERIFIED", index=True)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class VeteranIdentityEvidence(RecordMixin, Base):
+    """退役身份证据附件（退役证扫描件、证明材料等），通过 file_object_id 外键明确关联。"""
+
+    __tablename__ = "veteran_identity_evidences"
+    __table_args__ = (
+        UniqueConstraint("veteran_identity_id", "evidence_type", "file_object_id"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    veteran_identity_id: Mapped[str] = mapped_column(
+        ForeignKey("veteran_identities.id"), index=True
+    )
+    evidence_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    file_object_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class VeteranIdentityVerification(RecordMixin, Base):
+    """退役身份核验记录。只增不改，重新核验产生新记录，历史保留。"""
+
+    __tablename__ = "veteran_identity_verifications"
+    __table_args__ = (UniqueConstraint("organization_id", "verification_no"),)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    veteran_identity_id: Mapped[str] = mapped_column(
+        ForeignKey("veteran_identities.id"), index=True
+    )
+    verification_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    method: Mapped[str | None] = mapped_column(String(60))
+    verified_on: Mapped[date | None] = mapped_column(Date)
+    verified_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class VeteranAttributeHistory(RecordMixin, Base):
+    """退役身份的时间性属性历史（稳定身份与时间性属性分离）。
+
+    例如户籍地、优抚对象类别、服役结束日期等随政策年度变化的属性，
+    一律带 ``effective_from`` / ``effective_to``，禁止直接覆盖旧值。
+    """
+
+    __tablename__ = "veteran_attribute_histories"
+    __table_args__ = (
+        Index("ix_veteran_attribute_lookup", "veteran_identity_id", "attribute_code"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    veteran_identity_id: Mapped[str] = mapped_column(
+        ForeignKey("veteran_identities.id"), index=True
+    )
+    attribute_code: Mapped[str] = mapped_column(String(60), nullable=False)
+    value_text: Mapped[str | None] = mapped_column(String(200))
+    value_date: Mapped[date | None] = mapped_column(Date)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    source: Mapped[str | None] = mapped_column(String(120))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class FundingProgram(RecordMixin, Base):
+    """政府补贴项目（稳定目录，不随年度变化）。"""
+
+    __tablename__ = "funding_programs"
+    __table_args__ = (UniqueConstraint("organization_id", "program_code"),)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    program_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    program_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    department: Mapped[str] = mapped_column(String(80), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class FundingProgramVersion(RecordMixin, Base):
+    """项目版本：绑定区、部门、有效期与政策文件。已发布版本不可修改，只能停用或新建版本。"""
+
+    __tablename__ = "funding_program_versions"
+    __table_args__ = (
+        UniqueConstraint("funding_program_id", "version_no"),
+        Index("ix_funding_program_versions_scope", "organization_id", "region", "department"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    funding_program_id: Mapped[str] = mapped_column(ForeignKey("funding_programs.id"), index=True)
+    version_no: Mapped[str] = mapped_column(String(30), nullable=False)
+    region: Mapped[str] = mapped_column(String(60), nullable=False)
+    department: Mapped[str] = mapped_column(String(80), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    policy_document_no: Mapped[str | None] = mapped_column(String(80))
+    policy_document_file_object_id: Mapped[str | None] = mapped_column(ForeignKey("file_objects.id"))
+    program_status: Mapped[str] = mapped_column(String(30), default="DRAFT", nullable=False, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    remarks: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class FundingSource(RecordMixin, Base):
+    """资金来源方：具体到区+部门（如某区人社局、某区退役军人事务局）。"""
+
+    __tablename__ = "funding_sources"
+    __table_args__ = (UniqueConstraint("organization_id", "source_code"),)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    source_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    department: Mapped[str] = mapped_column(String(80), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class ProgramFundingSource(RecordMixin, Base):
+    """项目版本与资金来源的关联及**分摊规则**。
+
+    设计 Prompt 7 第三节要求：双部门合法分摊必须有明确分配规则，
+    不能通过忽略警告实现。``allocation_rule_type`` 只允许预定义策略，
+    比例用整数基点（bp，1bp = 0.01%）保存，禁止 float。
+    """
+
+    __tablename__ = "program_funding_sources"
+    __table_args__ = (
+        UniqueConstraint("funding_program_version_id", "funding_source_id"),
+        CheckConstraint(
+            "allocation_ratio_bp IS NULL OR (allocation_ratio_bp >= 0 AND allocation_ratio_bp <= 10000)",
+            name="ck_program_funding_source_ratio_range",
+        ),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    funding_program_version_id: Mapped[str] = mapped_column(
+        ForeignKey("funding_program_versions.id"), index=True
+    )
+    funding_source_id: Mapped[str] = mapped_column(ForeignKey("funding_sources.id"), index=True)
+    allocation_rule_type: Mapped[str] = mapped_column(String(30), default="EXCLUSIVE", nullable=False)
+    allocation_ratio_bp: Mapped[int | None] = mapped_column(Integer)
+    priority: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class FundingCase(RecordMixin, Base):
+    """政府项目资格案：**属于 CourseEnrollment，不属于 ClassCycle**（设计 Prompt 6 第二节）。
+
+    滚班产生新的 ClassMembership，但不重建 FundingCase —— 因此滚班不会重置补贴资格。
+    """
+
+    __tablename__ = "funding_cases"
+    __table_args__ = (
+        UniqueConstraint("course_enrollment_id"),
+        Index("ix_funding_cases_status", "organization_id", "case_status"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    course_enrollment_id: Mapped[str] = mapped_column(
+        ForeignKey("course_enrollments.id"), index=True
+    )
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    funding_program_version_id: Mapped[str] = mapped_column(
+        ForeignKey("funding_program_versions.id"), index=True
+    )
+    region: Mapped[str] = mapped_column(String(60), nullable=False)
+    department: Mapped[str] = mapped_column(String(80), nullable=False)
+    case_status: Mapped[str] = mapped_column(String(30), default="DRAFT", nullable=False, index=True)
+    policy_snapshot_json: Mapped[str | None] = mapped_column(Text)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    remarks: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class FundingCaseComponent(RecordMixin, Base):
+    """资格案的组成成分：培训补贴 / 餐补 / 住宿补贴，各自独立状态。"""
+
+    __tablename__ = "funding_case_components"
+    __table_args__ = (UniqueConstraint("funding_case_id", "component_type"),)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    funding_case_id: Mapped[str] = mapped_column(ForeignKey("funding_cases.id"), index=True)
+    component_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    component_status: Mapped[str] = mapped_column(String(30), default="PENDING", nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class EligibilityAssessment(RecordMixin, Base):
+    """资格评定：只增不改，每次重新评定产生新 version，``is_current`` 标记当前有效。"""
+
+    __tablename__ = "eligibility_assessments"
+    __table_args__ = (
+        Index(
+            "uq_eligibility_assessment_current",
+            "funding_case_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+        ),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    funding_case_id: Mapped[str] = mapped_column(ForeignKey("funding_cases.id"), index=True)
+    assessment_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    assessment_status: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    basis_json: Mapped[str | None] = mapped_column(Text)
+    assessed_on: Mapped[date | None] = mapped_column(Date)
+    assessed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class EligibilityEvidence(RecordMixin, Base):
+    """资格评定证据附件。"""
+
+    __tablename__ = "eligibility_evidences"
+    __table_args__ = (
+        UniqueConstraint("eligibility_assessment_id", "evidence_type", "file_object_id"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    eligibility_assessment_id: Mapped[str] = mapped_column(
+        ForeignKey("eligibility_assessments.id"), index=True
+    )
+    evidence_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    file_object_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class ProjectCost(RecordMixin, Base):
+    """学校实际垫付成本（教师课时费 / 场地 / 住宿 / 其他）。
+
+    设计 Prompt 6 第三节明确：**学校实际成本不得直接等同于政府补贴权益或政府应收**。
+    因此本表与 SubsidyEntitlement / AllowancePayable 之间没有任何金额推导关系。
+    """
+
+    __tablename__ = "project_costs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key"),
+        CheckConstraint("amount_cent >= 0", name="ck_project_cost_amount_nonneg"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    class_cycle_id: Mapped[str] = mapped_column(ForeignKey("class_cycles.id"), index=True)
+    funding_program_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("funding_program_versions.id")
+    )
+    cost_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_status: Mapped[str] = mapped_column(String(30), default="DRAFT", nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class ProjectCostAllocation(RecordMixin, Base):
+    """学校成本按学员/报名分摊，仅用于成本核算，不形成学员应付或政府应收。"""
+
+    __tablename__ = "project_cost_allocations"
+    __table_args__ = (
+        UniqueConstraint("project_cost_id", "course_enrollment_id"),
+        CheckConstraint("amount_cent >= 0", name="ck_project_cost_alloc_amount_nonneg"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_cost_id: Mapped[str] = mapped_column(ForeignKey("project_costs.id"), index=True)
+    allocation_basis: Mapped[str] = mapped_column(String(30), default="MANUAL", nullable=False)
+    student_id: Mapped[str | None] = mapped_column(ForeignKey("students.id"))
+    course_enrollment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("course_enrollments.id"), index=True
+    )
+    amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class AttendanceDayFact(RecordMixin, Base):
+    """每日出勤事实（设计 Prompt 6 第四节）。
+
+    同一天多个课次**只能形成一条当前有效每日事实**——由部分唯一索引
+    ``uq_attendance_day_fact_current`` 在数据库层保证，而非仅靠服务层校验。
+    考勤更正后生成事实新版本（``fact_version`` 递增，旧版本置
+    ``SUPERSEDED`` 并记录 ``superseded_by_fact_id``），不覆盖已申报的旧事实。
+    """
+
+    __tablename__ = "attendance_day_facts"
+    __table_args__ = (
+        Index(
+            "uq_attendance_day_fact_current",
+            "student_id",
+            "course_enrollment_id",
+            "fact_date",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+        ),
+        CheckConstraint("attended_minutes >= 0", name="ck_day_fact_attended_nonneg"),
+        CheckConstraint("planned_minutes >= 0", name="ck_day_fact_planned_nonneg"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    course_enrollment_id: Mapped[str] = mapped_column(
+        ForeignKey("course_enrollments.id"), index=True
+    )
+    class_cycle_id: Mapped[str | None] = mapped_column(ForeignKey("class_cycles.id"))
+    fact_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    source_session_ids_json: Mapped[str | None] = mapped_column(Text)
+    planned_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    attended_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    late_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    early_leave_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    leave_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    absent_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    day_part: Mapped[str] = mapped_column(String(20), default="NONE", nullable=False)
+    fact_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    fact_status: Mapped[str] = mapped_column(String(30), default="DRAFT", nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    superseded_by_fact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("attendance_day_facts.id")
+    )
+    basis_json: Mapped[str | None] = mapped_column(Text)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class LodgingStay(RecordMixin, Base):
+    """一次住宿事实（入住—退房）。审核通过后方可衍生住宿夜事实。"""
+
+    __tablename__ = "lodging_stays"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key"),
+        CheckConstraint("check_out_date >= check_in_date", name="ck_lodging_stay_date_order"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    course_enrollment_id: Mapped[str] = mapped_column(
+        ForeignKey("course_enrollments.id"), index=True
+    )
+    class_cycle_id: Mapped[str | None] = mapped_column(ForeignKey("class_cycles.id"))
+    check_in_date: Mapped[date] = mapped_column(Date, nullable=False)
+    check_out_date: Mapped[date] = mapped_column(Date, nullable=False)
+    location: Mapped[str | None] = mapped_column(String(200))
+    is_school_arranged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    review_status: Mapped[str] = mapped_column(String(30), default="PENDING", nullable=False, index=True)
+    evidence_file_object_id: Mapped[str | None] = mapped_column(ForeignKey("file_objects.id"))
+    note: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    review_note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class LodgingNightFact(RecordMixin, Base):
+    """住宿夜事实：每个住宿夜一条。
+
+    部分唯一索引 ``uq_lodging_night_fact_approved`` 保证同一学员、
+    同一夜晚**最多只有一条审核通过的住宿事实**，防止跨住宿单重复主张住宿补贴。
+    """
+
+    __tablename__ = "lodging_night_facts"
+    __table_args__ = (
+        UniqueConstraint("lodging_stay_id", "night_date"),
+        Index(
+            "uq_lodging_night_fact_approved",
+            "student_id",
+            "night_date",
+            unique=True,
+            sqlite_where=text("review_status = 'APPROVED'"),
+        ),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    lodging_stay_id: Mapped[str] = mapped_column(ForeignKey("lodging_stays.id"), index=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    course_enrollment_id: Mapped[str] = mapped_column(
+        ForeignKey("course_enrollments.id"), index=True
+    )
+    night_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    location: Mapped[str | None] = mapped_column(String(200))
+    is_school_arranged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    review_status: Mapped[str] = mapped_column(String(30), default="PENDING", nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class AllowancePolicy(RecordMixin, Base):
+    """版本化补贴政策规则（设计 Prompt 6 第六节）。
+
+    规则只允许**预定义策略 + 有类型参数**（``basis_rule`` + ``rule_params_json``），
+    禁止数据库执行任意 Python/SQL/eval/不受控 Jinja。
+    已发布规则不可修改，只能新建版本。
+    """
+
+    __tablename__ = "allowance_policies"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "region",
+            "department",
+            "funding_program_version_id",
+            "allowance_type",
+            "version_no",
+        ),
+        CheckConstraint("unit_amount_cent >= 0", name="ck_allowance_policy_unit_nonneg"),
+        Index("ix_allowance_policies_lookup", "organization_id", "region", "department", "allowance_type"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    region: Mapped[str] = mapped_column(String(60), nullable=False)
+    department: Mapped[str] = mapped_column(String(80), nullable=False)
+    funding_program_version_id: Mapped[str] = mapped_column(
+        ForeignKey("funding_program_versions.id"), index=True
+    )
+    allowance_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    version_no: Mapped[str] = mapped_column(String(30), nullable=False)
+    policy_document_no: Mapped[str | None] = mapped_column(String(80))
+    policy_document_file_object_id: Mapped[str | None] = mapped_column(ForeignKey("file_objects.id"))
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    basis_rule: Mapped[str] = mapped_column(String(30), nullable=False)
+    unit_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    daily_cap_cent: Mapped[int | None] = mapped_column(Integer)
+    total_cap_cent: Mapped[int | None] = mapped_column(Integer)
+    half_day_threshold_minutes: Mapped[int | None] = mapped_column(Integer)
+    full_day_threshold_minutes: Mapped[int | None] = mapped_column(Integer)
+    rounding_rule: Mapped[str] = mapped_column(String(20), default="FLOOR", nullable=False)
+    rule_params_json: Mapped[str | None] = mapped_column(Text)
+    policy_status: Mapped[str] = mapped_column(String(30), default="DRAFT", nullable=False, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    test_sample_json: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class SubsidyEntitlement(RecordMixin, Base):
+    """政策计算权益（**只表示政策算出多少**）。
+
+    设计 Prompt 6 第七节要求权益、学校应付、实际支付三者互不混淆：
+    本表只有 ``computed_amount_cent`` 与调整累计 ``adjusted_amount_cent``，
+    学校应付在 AllowancePayable，实际支付在 AllowancePayment。
+    """
+
+    __tablename__ = "subsidy_entitlements"
+    __table_args__ = (
+        Index(
+            "uq_subsidy_entitlement_current",
+            "funding_case_id",
+            "allowance_type",
+            "allowance_policy_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+        ),
+        CheckConstraint("computed_amount_cent >= 0", name="ck_subsidy_entitlement_amount_nonneg"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    funding_case_id: Mapped[str] = mapped_column(ForeignKey("funding_cases.id"), index=True)
+    course_enrollment_id: Mapped[str] = mapped_column(
+        ForeignKey("course_enrollments.id"), index=True
+    )
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    allowance_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    region: Mapped[str] = mapped_column(String(60), nullable=False)
+    department: Mapped[str] = mapped_column(String(80), nullable=False)
+    allowance_policy_id: Mapped[str] = mapped_column(
+        ForeignKey("allowance_policies.id"), index=True
+    )
+    entitlement_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    computed_amount_cent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    adjusted_amount_cent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    entitlement_status: Mapped[str] = mapped_column(
+        String(30), default="DRAFT", nullable=False, index=True
+    )
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    covered_day_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    covered_night_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    basis_json: Mapped[str | None] = mapped_column(Text)
+    computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    computed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class EntitlementAdjustment(RecordMixin, Base):
+    """权益调整：只增不改，冲正用 ``adjustment_of_id`` 指向原调整并取反金额。"""
+
+    __tablename__ = "entitlement_adjustments"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key"),
+        CheckConstraint("amount_delta_cent <> 0", name="ck_entitlement_adjustment_nonzero"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    subsidy_entitlement_id: Mapped[str] = mapped_column(
+        ForeignKey("subsidy_entitlements.id"), index=True
+    )
+    adjustment_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    amount_delta_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    adjustment_of_id: Mapped[str | None] = mapped_column(ForeignKey("entitlement_adjustments.id"))
+    accounting_date: Mapped[date | None] = mapped_column(Date)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class AllowancePayable(RecordMixin, Base):
+    """学校应向学员支付的补贴（**学校应付**，与权益和实际支付分离）。"""
+
+    __tablename__ = "allowance_payables"
+    __table_args__ = (
+        UniqueConstraint("funding_case_id", "allowance_type"),
+        CheckConstraint("payable_amount_cent >= 0", name="ck_allowance_payable_amount_nonneg"),
+        CheckConstraint("paid_amount_cent >= 0", name="ck_allowance_payable_paid_nonneg"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    funding_case_id: Mapped[str] = mapped_column(ForeignKey("funding_cases.id"), index=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    allowance_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    payable_amount_cent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    paid_amount_cent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    payable_status: Mapped[str] = mapped_column(String(30), default="OPEN", nullable=False, index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class AllowancePayment(RecordMixin, Base):
+    """学校向学员实际支付补贴的流水。支付失败、补发、退回均保留记录。"""
+
+    __tablename__ = "allowance_payments"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key"),
+        CheckConstraint("amount_cent > 0", name="ck_allowance_payment_amount_positive"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    allowance_payable_id: Mapped[str] = mapped_column(
+        ForeignKey("allowance_payables.id"), index=True
+    )
+    amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    payment_status: Mapped[str] = mapped_column(String(30), default="SUCCEEDED", nullable=False, index=True)
+    paid_on: Mapped[date | None] = mapped_column(Date)
+    reversed_by_payment_id: Mapped[str | None] = mapped_column(ForeignKey("allowance_payments.id"))
+    failure_code: Mapped[str | None] = mapped_column(String(40))
+    note: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
