@@ -1,5 +1,16 @@
 # 职业培训教务系统 Codex 提示词
 
+> ## ⚠️ 本文是**派生工作副本**，不是原始设计
+>
+> - **权威基线**：`docs/architecture/baseline.md`
+> - **原始设计**：《职业培训教务系统 Codex 提示词 V3.0》（项目负责人持有）。**本仓库尚未落盘**，原因与要求见 baseline.md 第四节。
+> - **本文已含的偏离**（均为项目负责人决策，**不是实现漏做**）：
+>   1. **部署**：原文「单台阿里云 ECS + **Docker Compose**」→ 本文已改写为「ECS 原生部署（Nginx + systemd + Uvicorn 单 worker）」。见 [ADR-0001](../architecture/adr/ADR-0001-native-deploy-instead-of-docker.md)。
+>   2. **附件存储**：原文「第一期即接入阿里云 OSS」→ 已调整为「**本地优先、OSS 后续接入**」。见 [ADR-0002](../architecture/adr/ADR-0002-local-storage-first-oss-later.md)。
+> - **业务口径澄清**（非偏离）：一个课程报名只允许一条证书记录；本系统不需要成绩有效期，也不需要区分必考／选考。见 baseline.md 第二节。
+> - **维护规则**：本文可修订，但每次修订必须登记到 `baseline.md` 第二节；**严禁静默改写**。
+> - **评审提示**：直接拿本文做验收，会**自动放过全部部署与存储相关偏离**（本文已不含 「docker」任何字样）。评审请以 `baseline.md` + `docs/implementation/acceptance-checklist.md` 为准。
+
 版本：V3.0 FastAPI + SQLite 轻量实施版
 适用规模：单机构、学员少于 1000 人、低并发写入
 目标部署：单台阿里云 ECS 原生部署（Nginx + systemd + Uvicorn）
