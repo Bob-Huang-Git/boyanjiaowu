@@ -1,6 +1,6 @@
 # 职业培训教务系统
 
-当前交付已覆盖 Sprint 0–4：工程与原生部署基线、学员与课程报名、本地附件中心、班级教学，以及分科考试、多次补考、费用认定和证书代发。项目采用 Windows 原生开发与阿里云 ECS Linux 原生部署，不使用 Docker。
+当前交付已覆盖 Sprint 0–5：工程与原生部署基线、学员与课程报名、本地附件中心、班级教学、分科考试与证书，以及收费、代收代缴、退费和教师结算。项目采用 Windows 原生开发与阿里云 ECS Linux 原生部署，不使用 Docker。
 
 ## Windows 本地开发
 
@@ -17,10 +17,12 @@ python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 alembic upgrade head
 python -m app.cli.sync_sprint4_permissions
+python -m app.cli.sync_sprint5_permissions
 python -m app.cli.bootstrap
 python -m app.cli.seed_demo
 python -m app.cli.seed_attachments
 python -m app.cli.seed_exam
+python -m app.cli.seed_finance
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -33,6 +35,8 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 Sprint 3 增加课次、教师安排、考勤提交确认锁定与修订、滚班、外部 HTTPS 录屏链接和教师分钟汇总。时长全部以整数分钟存储；考勤证明继续引用 Sprint 2 的本地附件对象。
 
 Sprint 4 增加考试批次与科目配置、按课程报名的分科考试、任意次数补考、定点整数成绩、官方确认与修订、两阶段 Excel 成绩导入、考试费用认定及证书代发状态机。考试费用仅保存应收依据和政策快照，不包含 `paid`、真实收款、退款或财务流水。成绩导入模板可从考试工作台下载，也可请求 `GET /api/imports/exam-results/template`。
+
+Sprint 5 增加培训费和考试费应收、线下收款及分配、考试机构应代缴和实际代缴、按锁定考勤分钟计算的退费快照、退款审批与付款、教师课次结算和付款。金额全部使用整数分，时长全部使用整数分钟。`SCHOOL_REVENUE` 与 `AGENCY_COLLECTION` 分开汇总；已确认资金记录通过追加调整或冲正保留历史。
 
 另开 PowerShell 启动前端：
 

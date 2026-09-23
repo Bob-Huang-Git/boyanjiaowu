@@ -1,9 +1,11 @@
 # ruff: noqa: E501
+# fmt: off
 import uuid
 from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -227,6 +229,14 @@ class RefundPolicyVersion(RecordMixin, Base):
     version_no: Mapped[str] = mapped_column(String(40), unique=True)
     name: Mapped[str] = mapped_column(String(120))
     policy_description: Mapped[str | None] = mapped_column(Text)
+    calculation_method: Mapped[str | None] = mapped_column(String(50))
+    consumed_minutes_basis: Mapped[str | None] = mapped_column(String(50))
+    rounding_mode: Mapped[str | None] = mapped_column(String(20))
+    minimum_deduction_amount_cent: Mapped[int | None] = mapped_column(Integer)
+    administrative_fee_amount_cent: Mapped[int | None] = mapped_column(Integer)
+    initial_exam_fee_refundable: Mapped[bool] = mapped_column(Boolean, default=False)
+    resit_fee_refundable: Mapped[bool] = mapped_column(Boolean, default=False)
+    refund_deadline_rule: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
 
 
@@ -904,6 +914,369 @@ class ExamDomainAttachment(RecordMixin, Base):
     __table_args__ = (UniqueConstraint("owner_type", "owner_id", "file_object_id"),)
     owner_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
     owner_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    file_object_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
+    attachment_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class Receivable(RecordMixin, Base):
+    __tablename__ = "receivables"
+    __table_args__ = (
+        UniqueConstraint("receivable_no"),
+        UniqueConstraint("source_type", "source_id"),
+        CheckConstraint("original_amount_cent >= 0", name="ck_receivable_original_nonnegative"),
+        CheckConstraint("payable_amount_cent >= 0", name="ck_receivable_payable_nonnegative"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    receivable_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    course_enrollment_id: Mapped[str] = mapped_column(
+        ForeignKey("course_enrollments.id"), index=True
+    )
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    receivable_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    economic_nature: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    fee_policy_version_id: Mapped[str | None] = mapped_column(ForeignKey("fee_policy_versions.id"))
+    original_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    adjusted_amount_cent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    payable_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    receivable_status: Mapped[str] = mapped_column(String(30), default="DRAFT", index=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    cancellation_reason: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class ReceivableAdjustment(RecordMixin, Base):
+    __tablename__ = "receivable_adjustments"
+    __table_args__ = (CheckConstraint("amount_cent > 0", name="ck_receivable_adjustment_positive"),)
+    receivable_id: Mapped[str] = mapped_column(ForeignKey("receivables.id"), index=True)
+    adjustment_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_status: Mapped[str] = mapped_column(String(20), default="APPROVED", nullable=False)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    reversal_of_adjustment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("receivable_adjustments.id")
+    )
+
+
+class Payment(RecordMixin, Base):
+    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("payment_no"),
+        UniqueConstraint("idempotency_key"),
+        UniqueConstraint("internal_receipt_no"),
+        CheckConstraint("received_amount_cent > 0", name="ck_payment_amount_positive"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    payment_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    payer_name: Mapped[str | None] = mapped_column(String(120))
+    received_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    external_transaction_no_ciphertext: Mapped[str | None] = mapped_column(Text)
+    external_transaction_no_last4: Mapped[str | None] = mapped_column(String(4))
+    internal_receipt_no: Mapped[str | None] = mapped_column(String(80))
+    payment_status: Mapped[str] = mapped_column(String(30), default="DRAFT", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    void_reason: Mapped[str | None] = mapped_column(Text)
+    reversal_of_payment_id: Mapped[str | None] = mapped_column(ForeignKey("payments.id"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class PaymentAllocation(RecordMixin, Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint("allocated_amount_cent > 0", name="ck_payment_allocation_positive"),
+    )
+    payment_id: Mapped[str] = mapped_column(ForeignKey("payments.id"), index=True)
+    receivable_id: Mapped[str] = mapped_column(ForeignKey("receivables.id"), index=True)
+    allocated_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    allocation_status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    allocated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    allocated_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    reversal_of_allocation_id: Mapped[str | None] = mapped_column(ForeignKey("payment_allocations.id"))
+    remarks: Mapped[str | None] = mapped_column(Text)
+
+
+class AgencyPayable(RecordMixin, Base):
+    __tablename__ = "agency_payables"
+    __table_args__ = (
+        UniqueConstraint("agency_payable_no"),
+        UniqueConstraint("source_receivable_id"),
+        CheckConstraint("payable_amount_cent >= 0", name="ck_agency_payable_nonnegative"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    agency_payable_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    payee_type: Mapped[str] = mapped_column(String(30), default="EXAM_INSTITUTION")
+    payee_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    exam_batch_id: Mapped[str | None] = mapped_column(ForeignKey("exam_batches.id"))
+    exam_attempt_id: Mapped[str | None] = mapped_column(ForeignKey("exam_attempts.id"))
+    source_receivable_id: Mapped[str] = mapped_column(ForeignKey("receivables.id"), index=True)
+    payable_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    payable_status: Mapped[str] = mapped_column(String(30), default="DRAFT", index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    cancellation_reason: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class AgencyDisbursement(RecordMixin, Base):
+    __tablename__ = "agency_disbursements"
+    __table_args__ = (
+        UniqueConstraint("disbursement_no"),
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint("paid_amount_cent > 0", name="ck_agency_disbursement_positive"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    disbursement_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    payee_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    paid_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    external_transaction_no_ciphertext: Mapped[str | None] = mapped_column(Text)
+    disbursement_status: Mapped[str] = mapped_column(String(30), default="DRAFT", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class AgencyDisbursementAllocation(RecordMixin, Base):
+    __tablename__ = "agency_disbursement_allocations"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint("allocated_amount_cent > 0", name="ck_agency_allocation_positive"),
+    )
+    agency_disbursement_id: Mapped[str] = mapped_column(
+        ForeignKey("agency_disbursements.id"), index=True
+    )
+    agency_payable_id: Mapped[str] = mapped_column(ForeignKey("agency_payables.id"), index=True)
+    allocated_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    allocation_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    reversal_of_allocation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agency_disbursement_allocations.id")
+    )
+
+
+class RefundRequest(RecordMixin, Base):
+    __tablename__ = "refund_requests"
+    __table_args__ = (UniqueConstraint("refund_request_no"),)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    refund_request_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    course_enrollment_id: Mapped[str] = mapped_column(ForeignKey("course_enrollments.id"), index=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"), index=True)
+    refund_policy_version_id: Mapped[str] = mapped_column(ForeignKey("refund_policy_versions.id"))
+    refund_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    request_status: Mapped[str] = mapped_column(String(30), default="DRAFT", index=True)
+    requested_amount_cent: Mapped[int | None] = mapped_column(Integer)
+    calculated_refundable_amount_cent: Mapped[int | None] = mapped_column(Integer)
+    approved_refund_amount_cent: Mapped[int | None] = mapped_column(Integer)
+    manual_adjustment_amount_cent: Mapped[int] = mapped_column(Integer, default=0)
+    manual_adjustment_reason: Mapped[str | None] = mapped_column(Text)
+    active_snapshot_id: Mapped[str | None] = mapped_column(String(36))
+    calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    calculated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    submitted_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class RefundCalculationSnapshot(RecordMixin, Base):
+    __tablename__ = "refund_calculation_snapshots"
+    __table_args__ = (UniqueConstraint("refund_request_id", "calculation_version_no"),)
+    refund_request_id: Mapped[str] = mapped_column(ForeignKey("refund_requests.id"), index=True)
+    calculation_version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    tuition_receivable_id: Mapped[str] = mapped_column(ForeignKey("receivables.id"))
+    tuition_paid_allocated_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    curriculum_total_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    locked_attended_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    minutes_cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    policy_method: Mapped[str] = mapped_column(String(50), nullable=False)
+    rounding_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    consumed_amount_numerator: Mapped[int] = mapped_column(Integer, nullable=False)
+    consumed_amount_denominator: Mapped[int] = mapped_column(Integer, nullable=False)
+    consumed_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    administrative_fee_cent: Mapped[int] = mapped_column(Integer, default=0)
+    nonrefundable_fee_cent: Mapped[int] = mapped_column(Integer, default=0)
+    previous_refunded_amount_cent: Mapped[int] = mapped_column(Integer, default=0)
+    refundable_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    warning_json: Mapped[str] = mapped_column(Text, default="[]")
+    calculated_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class RefundAttendanceSnapshotLine(RecordMixin, Base):
+    __tablename__ = "refund_attendance_snapshot_lines"
+    __table_args__ = (UniqueConstraint("refund_calculation_snapshot_id", "attendance_record_id"),)
+    refund_calculation_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("refund_calculation_snapshots.id"), index=True
+    )
+    attendance_record_id: Mapped[str] = mapped_column(ForeignKey("attendance_records.id"))
+    attendance_revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    class_session_id: Mapped[str] = mapped_column(ForeignKey("class_sessions.id"))
+    service_date: Mapped[date] = mapped_column(Date, nullable=False)
+    actual_attendance_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    locked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RefundPayment(RecordMixin, Base):
+    __tablename__ = "refund_payments"
+    __table_args__ = (
+        UniqueConstraint("refund_payment_no"),
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint("paid_amount_cent > 0", name="ck_refund_payment_positive"),
+    )
+    refund_payment_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    refund_request_id: Mapped[str] = mapped_column(ForeignKey("refund_requests.id"), index=True)
+    paid_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payee_name: Mapped[str | None] = mapped_column(String(120))
+    external_transaction_no_ciphertext: Mapped[str | None] = mapped_column(Text)
+    payment_status: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    reversal_of_refund_payment_id: Mapped[str | None] = mapped_column(ForeignKey("refund_payments.id"))
+
+
+class RefundAllocation(RecordMixin, Base):
+    __tablename__ = "refund_allocations"
+    __table_args__ = (
+        UniqueConstraint("refund_payment_id", "payment_allocation_id"),
+        CheckConstraint("refunded_amount_cent > 0", name="ck_refund_allocation_positive"),
+    )
+    refund_payment_id: Mapped[str] = mapped_column(ForeignKey("refund_payments.id"), index=True)
+    payment_allocation_id: Mapped[str] = mapped_column(ForeignKey("payment_allocations.id"), index=True)
+    receivable_id: Mapped[str] = mapped_column(ForeignKey("receivables.id"), index=True)
+    refunded_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    allocation_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class TeacherSettlementBatch(RecordMixin, Base):
+    __tablename__ = "teacher_settlement_batches"
+    __table_args__ = (UniqueConstraint("batch_no"),)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    batch_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    settlement_status: Mapped[str] = mapped_column(String(30), default="DRAFT", index=True)
+    total_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    total_amount_cent: Mapped[int] = mapped_column(Integer, default=0)
+    calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    calculated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    submitted_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    cancellation_reason: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class TeacherSettlementLine(RecordMixin, Base):
+    __tablename__ = "teacher_settlement_lines"
+    __table_args__ = (
+        UniqueConstraint("session_teacher_assignment_id"),
+        CheckConstraint("final_amount_cent >= 0", name="ck_teacher_line_final_nonnegative"),
+    )
+    settlement_batch_id: Mapped[str] = mapped_column(ForeignKey("teacher_settlement_batches.id"), index=True)
+    teacher_id: Mapped[str] = mapped_column(ForeignKey("teacher_profiles.id"), index=True)
+    session_teacher_assignment_id: Mapped[str] = mapped_column(
+        ForeignKey("session_teacher_assignments.id"), nullable=False
+    )
+    class_session_id: Mapped[str] = mapped_column(ForeignKey("class_sessions.id"))
+    class_cycle_id: Mapped[str] = mapped_column(ForeignKey("class_cycles.id"))
+    service_date: Mapped[date] = mapped_column(Date, nullable=False)
+    teaching_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    settleable_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    rate_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    rate_unit_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    adjustment_amount_cent: Mapped[int] = mapped_column(Integer, default=0)
+    final_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    adjustment_reason: Mapped[str | None] = mapped_column(Text)
+    line_status: Mapped[str] = mapped_column(String(20), default="INCLUDED")
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class TeacherPayment(RecordMixin, Base):
+    __tablename__ = "teacher_payments"
+    __table_args__ = (
+        UniqueConstraint("teacher_payment_no"),
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint("paid_amount_cent > 0", name="ck_teacher_payment_positive"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    teacher_payment_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    teacher_id: Mapped[str] = mapped_column(ForeignKey("teacher_profiles.id"), index=True)
+    paid_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    external_transaction_no_ciphertext: Mapped[str | None] = mapped_column(Text)
+    payment_status: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    reversal_of_teacher_payment_id: Mapped[str | None] = mapped_column(ForeignKey("teacher_payments.id"))
+
+
+class TeacherPaymentAllocation(RecordMixin, Base):
+    __tablename__ = "teacher_payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        CheckConstraint("allocated_amount_cent > 0", name="ck_teacher_payment_allocation_positive"),
+    )
+    teacher_payment_id: Mapped[str] = mapped_column(ForeignKey("teacher_payments.id"), index=True)
+    teacher_settlement_line_id: Mapped[str] = mapped_column(
+        ForeignKey("teacher_settlement_lines.id"), index=True
+    )
+    allocated_amount_cent: Mapped[int] = mapped_column(Integer, nullable=False)
+    allocation_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    reversal_of_allocation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("teacher_payment_allocations.id")
+    )
+
+
+class FinanceAttachment(RecordMixin, Base):
+    __tablename__ = "finance_attachments"
+    __table_args__ = (UniqueConstraint("owner_type", "owner_id", "file_object_id"),)
+    owner_type: Mapped[str] = mapped_column(String(40), index=True)
+    owner_id: Mapped[str] = mapped_column(String(36), index=True)
     file_object_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
     attachment_type: Mapped[str] = mapped_column(String(40), nullable=False)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
