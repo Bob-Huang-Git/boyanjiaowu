@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_engine
 from app.core.models import Organization, Permission, Role, RolePermission, User, UserRole
+from app.core.permission_catalog import SPRINT6_PERMISSIONS
 from app.core.security import hash_password
 
 
@@ -118,6 +119,7 @@ def main() -> None:
             "finance.evidence.read": "查看财务凭证",
             "finance.export": "导出财务数据",
         }
+        permissions.update(SPRINT6_PERMISSIONS)
         for permission_code, description in permissions.items():
             permission = db.scalar(select(Permission).where(Permission.code == permission_code))
             if permission is None:

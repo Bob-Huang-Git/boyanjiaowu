@@ -1,5 +1,7 @@
 # 设计符合度比对报告（2026-09-23）
 
+> **历史快照提示**：本文主体基于 Sprint 5 代码形成。培训权益和 Sprint 6 后端已在后续批次补齐；当前验收状态以 `docs/implementation/acceptance-checklist.md` 为准，本文保留用于追溯当时发现的问题。
+
 比对基准：**《职业培训教务系统 Codex 提示词 V3.0》原始版**（用户提供，目标部署为「单台阿里云 ECS + Docker Compose」）
 比对对象：`D:\workstation\boyan教务` 当前代码
 方法：逐 Prompt 追溯（后端模型 / API / 页面 / 测试四维度）+ 源码 grep 验证

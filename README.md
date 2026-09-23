@@ -2,6 +2,8 @@
 
 当前交付已覆盖 Sprint 0–5：工程与原生部署基线、学员与课程报名、本地附件中心、班级教学、分科考试与证书，以及收费、代收代缴、退费和教师结算。项目采用 Windows 原生开发与阿里云 ECS Linux 原生部署，不使用 Docker。
 
+Sprint 6 的退役身份、政府项目资格、餐宿事实、补贴权益与学校垫资后端已经完成；细粒度数据范围、六项业务页面和人工验收仍在施工。后续 Sprint 6–11 按 [分批施工计划](docs/implementation/sprint-6-11-execution-plan.md) 推进。
+
 ## Windows 本地开发
 
 环境要求：Python 3.12、Node.js 22.12+ 和 npm。PowerShell 的执行策略若阻止激活虚拟环境，可在当前终端执行 `Set-ExecutionPolicy -Scope Process Bypass`。
@@ -18,6 +20,7 @@ Copy-Item .env.example .env
 alembic upgrade head
 python -m app.cli.sync_sprint4_permissions
 python -m app.cli.sync_sprint5_permissions
+python -m app.cli.sync_sprint6_permissions
 python -m app.cli.bootstrap
 python -m app.cli.seed_demo
 python -m app.cli.seed_attachments

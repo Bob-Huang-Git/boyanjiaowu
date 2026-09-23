@@ -95,6 +95,7 @@ cd backend
 | B1 | `v0.5.1-entitlement` | 缺口 #1 培训权益 + 滚班财务处理 | ✅ | 未做 | 28 passed | P3「重复滚班幂等」、P5 两条滚班收费 |
 | B2 | `v0.6.0-p6-funding-domain` | P6 身份层 + 项目资格层 + 学校成本层（22 张表） | ✅ | 未做 | 38 passed | P6 前 3 条 |
 | B3 | `v0.6.1-p6-allowances` | P6 事实层 + 政策层 + 权益支付（15 端点） | ✅ | 未做 | 48 passed | P6 后 7 条（P6 10/10 全绿） |
+| G0.1 | `v0.6.2-s6-permissions-plan` | Sprint 6–11 施工计划 + P6 权限目录和同步 | ✅ | 不涉及 | 49 passed | 权限同步完整且幂等 |
 
 ### 当前未交付项（如实列示）
 
@@ -107,4 +108,3 @@ cd backend
 
 B4：P7 政府申报与到账（12 条必测用例）。理由：与刚完成的权益层直接衔接——
 `ClaimBatch` 的权益占用需要 `SubsidyEntitlement`，衔接成本最低，且是仅剩的后端红色缺口。
-
