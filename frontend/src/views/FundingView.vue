@@ -66,6 +66,7 @@ const payableStatus = ref('')
 const programDialog = ref(false)
 const programForm = ref({ program_code: '', program_name: '', department: '', remarks: '' })
 const yuan = (cent: number | undefined) => `¥${(Number(cent || 0) / 100).toFixed(2)}`
+const dayPartLabel = (value: string) => ({ FULL_DAY: '全天', HALF_DAY: '半天', NONE: '不计', UNCLASSIFIED: '待政策判定' })[value] ?? value
 
 function query(params: Record<string, string>) {
   const search = new URLSearchParams()
@@ -195,7 +196,7 @@ onMounted(load)
           <el-table-column prop="late_minutes" label="迟到" />
           <el-table-column prop="leave_minutes" label="请假" />
           <el-table-column prop="absent_minutes" label="缺勤" />
-          <el-table-column prop="day_part" label="计日" />
+          <el-table-column label="计日"><template #default="scope">{{ dayPartLabel(scope.row.day_part) }}</template></el-table-column>
           <el-table-column prop="fact_status" label="状态" />
           <el-table-column label="操作">
             <template #default="scope"><el-button v-if="can('funding.allowance.manage') && scope.row.fact_status !== 'CONFIRMED'" text type="primary" @click="confirmFact(scope.row)">确认</el-button></template>

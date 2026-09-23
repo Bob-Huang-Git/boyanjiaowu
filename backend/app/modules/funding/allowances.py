@@ -76,10 +76,7 @@ RULE_ALLOWED_TYPES = {
 DAY_FULL = "FULL_DAY"
 DAY_HALF = "HALF_DAY"
 DAY_NONE = "NONE"
-
-#: 政策未配置阈值时的兜底判定标准（分钟）
-DEFAULT_HALF_DAY_MINUTES = 180
-DEFAULT_FULL_DAY_MINUTES = 360
+DAY_UNCLASSIFIED = "UNCLASSIFIED"
 
 ROUND_FLOOR = "FLOOR"
 ROUND_HALF_UP = "ROUND_HALF_UP"
@@ -114,9 +111,15 @@ def apply_rounding(amount: int, rule: str) -> int:
 
 
 def policy_thresholds(policy: AllowancePolicy) -> tuple[int, int]:
-    """取政策阈值；政策未配置时用兜底值。"""
-    half = policy.half_day_threshold_minutes or DEFAULT_HALF_DAY_MINUTES
-    full = policy.full_day_threshold_minutes or DEFAULT_FULL_DAY_MINUTES
+    """取政策阈值；真实政策未提供时禁止用系统默认值代替。"""
+    half = policy.half_day_threshold_minutes
+    full = policy.full_day_threshold_minutes
+    if half is None or full is None:
+        raise error(
+            422,
+            "ALLOWANCE_POLICY_THRESHOLDS_REQUIRED",
+            "餐补政策必须明确配置半天和全天分钟阈值。",
+        )
     if full < half:
         raise error(422, "ALLOWANCE_POLICY_THRESHOLD_INVALID", "全天阈值不能小于半天阈值。")
     return half, full
@@ -124,8 +127,22 @@ def policy_thresholds(policy: AllowancePolicy) -> tuple[int, int]:
 
 def half_day_amount(policy: AllowancePolicy) -> int:
     """半天金额 = 单价 × ``half_day_percent`` / 100，全程整数分。"""
-    params = json.loads(policy.rule_params_json) if policy.rule_params_json else {}
-    percent = int(params.get("half_day_percent", 50))
+    try:
+        params = json.loads(policy.rule_params_json) if policy.rule_params_json else {}
+    except (TypeError, ValueError) as exc:
+        raise error(422, "ALLOWANCE_POLICY_PARAMS_INVALID", "补贴政策参数不是有效 JSON。") from exc
+    if not isinstance(params, dict) or "half_day_percent" not in params:
+        raise error(
+            422,
+            "ALLOWANCE_POLICY_HALF_DAY_PERCENT_REQUIRED",
+            "餐补政策必须明确配置半天计发比例。",
+        )
+    try:
+        percent = int(params["half_day_percent"])
+    except (TypeError, ValueError) as exc:
+        raise error(
+            422, "ALLOWANCE_POLICY_PERCENT_INVALID", "半天比例必须是 0 到 100 的整数。"
+        ) from exc
     if not 0 <= percent <= 100:
         raise error(422, "ALLOWANCE_POLICY_PERCENT_INVALID", "半天比例必须在 0 到 100 之间。")
     if policy.rounding_rule == ROUND_HALF_UP:
@@ -149,6 +166,24 @@ def validate_policy_rule(basis_rule: str, allowance_type: str) -> None:
         )
 
 
+def validate_policy_configuration(
+    allowance_type: str,
+    half_day_threshold_minutes: int | None,
+    full_day_threshold_minutes: int | None,
+) -> None:
+    """阻止缺失的正式政策字段被代码默认值静默补齐。"""
+    if allowance_type != ALLOWANCE_MEAL:
+        return
+    if half_day_threshold_minutes is None or full_day_threshold_minutes is None:
+        raise error(
+            422,
+            "ALLOWANCE_POLICY_THRESHOLDS_REQUIRED",
+            "餐补政策必须明确配置半天和全天分钟阈值。",
+        )
+    if full_day_threshold_minutes < half_day_threshold_minutes:
+        raise error(422, "ALLOWANCE_POLICY_THRESHOLD_INVALID", "全天阈值不能小于半天阈值。")
+
+
 # ---------------------------------------------------------------- 政策解析
 
 
@@ -166,6 +201,45 @@ def membership_for(db, user: User, membership_id: str) -> ClassMembership:
     if cycle is None or cycle.organization_id != user.organization_id:
         raise error(404, "MEMBERSHIP_NOT_FOUND", "未找到班级经历。")
     return membership
+
+
+def classify_day_fact(
+    db, enrollment: CourseEnrollment, fact_date: date, attended_minutes: int
+) -> tuple[str, dict]:
+    """只按已发布的真实政策分类；没有政策时保持未分类。"""
+    if attended_minutes <= 0:
+        return DAY_NONE, {"classification": "NO_ATTENDANCE"}
+    case = db.scalar(select(FundingCase).where(FundingCase.course_enrollment_id == enrollment.id))
+    if case is None:
+        return DAY_UNCLASSIFIED, {"classification": "PENDING_POLICY"}
+    policies = db.scalars(
+        select(AllowancePolicy).where(
+            AllowancePolicy.organization_id == case.organization_id,
+            AllowancePolicy.funding_program_version_id == case.funding_program_version_id,
+            AllowancePolicy.region == case.region,
+            AllowancePolicy.department == case.department,
+            AllowancePolicy.allowance_type == ALLOWANCE_MEAL,
+            AllowancePolicy.policy_status == POLICY_PUBLISHED,
+        )
+    ).all()
+    applicable = [
+        policy
+        for policy in policies
+        if policy.effective_from <= fact_date
+        and (policy.effective_to is None or policy.effective_to >= fact_date)
+    ]
+    if len(applicable) != 1:
+        return DAY_UNCLASSIFIED, {"classification": "PENDING_POLICY"}
+    policy = applicable[0]
+    if policy.half_day_threshold_minutes is None or policy.full_day_threshold_minutes is None:
+        return DAY_UNCLASSIFIED, {"classification": "PENDING_POLICY"}
+    half, full = policy_thresholds(policy)
+    return resolve_day_part(attended_minutes, half, full), {
+        "classification": "POLICY",
+        "allowance_policy_id": policy.id,
+        "half_day_minutes": half,
+        "full_day_minutes": full,
+    }
 
 
 def resolve_policy(db, case: FundingCase, allowance_type: str, anchor: date) -> AllowancePolicy:
@@ -239,7 +313,7 @@ def rebuild_day_fact(
     leave = sum(r.expected_minutes for r in rows if r.attendance_status == "LEAVE")
     absent = sum(r.expected_minutes for r in rows if r.attendance_status == "ABSENT")
     session_ids = sorted({r.class_session_id for r in rows})
-    day_part = resolve_day_part(attended, DEFAULT_HALF_DAY_MINUTES, DEFAULT_FULL_DAY_MINUTES)
+    day_part, classification_basis = classify_day_fact(db, enrollment, fact_date, attended)
 
     current = db.scalar(
         select(AttendanceDayFact).where(
@@ -284,10 +358,7 @@ def rebuild_day_fact(
     fact.basis_json = json.dumps(
         {
             "attendance_record_ids": sorted(r.id for r in rows),
-            "thresholds": {
-                "half_day_minutes": DEFAULT_HALF_DAY_MINUTES,
-                "full_day_minutes": DEFAULT_FULL_DAY_MINUTES,
-            },
+            **classification_basis,
         },
         ensure_ascii=False,
     )
@@ -434,7 +505,8 @@ def compute_allowance(
                 "ALLOWANCE_NO_ATTENDED_DAY",
                 "该区间内没有已确认的出勤日，不产生餐补权益。",
             )
-        amount = full_days * unit + half_days * half_day_amount(policy)
+        half_amount = half_day_amount(policy) if half_days else 0
+        amount = full_days * unit + half_days * half_amount
         covered_days = full_days + half_days
         covered_nights = 0
         day_count, night_count = full_days, half_days
@@ -939,6 +1011,11 @@ def publish_allowance_policy(
             "ALLOWANCE_POLICY_SAMPLE_REQUIRED",
             "发布政策前必须提供测试样例（设计 P6 第六节）。",
         )
+    validate_policy_configuration(
+        policy.allowance_type,
+        policy.half_day_threshold_minutes,
+        policy.full_day_threshold_minutes,
+    )
     policy.policy_status = POLICY_PUBLISHED
     policy.published_at = utc_now()
     policy.published_by = user.id

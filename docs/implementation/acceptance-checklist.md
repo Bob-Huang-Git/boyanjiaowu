@@ -121,6 +121,8 @@
 
 权限交付补充：Sprint 6 的 15 个细分权限已进入统一目录、管理员初始化和幂等同步命令，由 `test_sprint6_permissions.py` 验证；行级数据范围仍按施工计划 G0.2 待实现。
 
+政策留白补充：正式政府补贴规则尚未提供，系统不再内置半天/全天分钟数或半天计发比例。`test_subsidy_policy_blank.py` 验证缺失字段不会被默认业务值静默补齐。
+
 - [x] 非退役学员不能建立 `FundingCase` — `test_veteran_funding.py`
 - [x] 一个学员多门课程分别审核资格 — `test_veteran_funding.py`
 - [x] 滚班不自动重置培训补贴资格 — `test_veteran_funding.py`
@@ -259,7 +261,7 @@
 | **P6–P11 小计** | **82** | **11** | **5** | **66** |
 | **合计** | **130** | **34** | **17** | **79** |
 
-**实测**：`pytest` **48** 个用例全部通过（`test_baseline` / `test_sprint1` / `test_attachments` / `test_teaching` / `test_exam` / `test_finance` / `test_entitlement` / `test_veteran_funding` / `test_allowance`）；`ruff check` 与 `ruff format --check` 全通过。用例数与覆盖条目数不等价——一个用例常覆盖多个阶段的多条要求。
+**实测**：`pytest` **51** 个用例全部通过（含 Sprint 6 权限同步与政策留白守卫）；`ruff check` 与 `ruff format --check` 全通过。用例数与覆盖条目数不等价——一个用例常覆盖多个阶段的多条要求。
 
 **结论**：P1–P5 的 48 条必测用例中，**13 条完全未覆盖、12 条只覆盖了正向路径**。其中 4 类并发用例（并发建档、并发滚班、并发退款、并发申报）仍全部为零，直接影响学籍与资金正确性。P6 的 10 条已全部覆盖（模型、服务、端点、测试齐备，**页面 6 项仍待交付**）；P7–P11 的 72 条尚未开始。
 
