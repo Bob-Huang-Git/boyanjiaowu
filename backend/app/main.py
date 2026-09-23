@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.models import User
 from app.modules.attachments.router import router as attachments_router
 from app.modules.exam.router import router as exam_router
+from app.modules.finance.entitlements import router as entitlement_router
 from app.modules.finance.router import router as finance_router
 from app.modules.iam.router import Db, require_permission, router
 from app.modules.sprint1.router import router as sprint1_router
@@ -24,6 +25,7 @@ app.include_router(attachments_router)
 app.include_router(exam_router)
 app.include_router(teaching_router)
 app.include_router(finance_router)
+app.include_router(entitlement_router)
 
 
 @app.middleware("http")

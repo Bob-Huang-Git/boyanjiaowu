@@ -1280,3 +1280,85 @@ class FinanceAttachment(RecordMixin, Base):
     file_object_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
     attachment_type: Mapped[str] = mapped_column(String(40), nullable=False)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class TrainingEntitlement(RecordMixin, Base):
+    """培训权益台账：一条课程报名对应的分钟额度汇总。
+
+    汇总口径（单位：整数分钟，禁止 float）::
+
+        total     = purchased_minutes + gifted_minutes
+        available = total + free_rollover_minutes + supplement_minutes
+                    - consumed_minutes - refund_deducted_minutes
+
+    字段语义：
+
+    - ``purchased_minutes`` 学员付费购买的分钟；
+    - ``gifted_minutes`` 机构赠送的分钟；
+    - ``free_rollover_minutes`` 因机构原因滚班而免费结转的分钟（不重复收费）；
+    - ``supplement_minutes`` 学员补差后新增的分钟（对应补差应收）；
+    - ``consumed_minutes`` 已消耗分钟（已履约）；
+    - ``refund_deducted_minutes`` 退费时按已履约口径扣减的分钟（退费扣减依据）。
+
+    本模型只承载**机制**；具体计费口径、哪些滚班情形免费、补差单价，
+    取决于业务方确认（见 ``docs/implementation/roadmap.md`` 「真实资料待确认」）。
+    """
+
+    __tablename__ = "training_entitlements"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "course_enrollment_id"),
+        CheckConstraint("purchased_minutes >= 0", name="ck_entitlement_purchased_nonnegative"),
+        CheckConstraint("gifted_minutes >= 0", name="ck_entitlement_gifted_nonnegative"),
+        CheckConstraint(
+            "free_rollover_minutes >= 0", name="ck_entitlement_free_rollover_nonnegative"
+        ),
+        CheckConstraint("supplement_minutes >= 0", name="ck_entitlement_supplement_nonnegative"),
+        CheckConstraint("consumed_minutes >= 0", name="ck_entitlement_consumed_nonnegative"),
+        CheckConstraint(
+            "refund_deducted_minutes >= 0", name="ck_entitlement_refund_deducted_nonnegative"
+        ),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    course_enrollment_id: Mapped[str] = mapped_column(
+        ForeignKey("course_enrollments.id"), index=True
+    )
+    purchased_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    gifted_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    free_rollover_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    supplement_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    consumed_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    refund_deducted_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    entitlement_status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)
+    rule_version: Mapped[str | None] = mapped_column(String(40))
+    remarks: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class TrainingEntitlementEntry(RecordMixin, Base):
+    """培训权益变动明细：只增不改，冲正用反向分录（``reversal_of_entry_id``）。
+
+    ``minutes_delta`` 为正表示增加权益，为负表示消耗或扣减。
+    每次变动必须带 ``idempotency_key``，与组织组成唯一约束，用于拦截重复请求。
+    """
+
+    __tablename__ = "training_entitlement_entries"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key"),
+        CheckConstraint("minutes_delta <> 0", name="ck_entitlement_entry_nonzero"),
+    )
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    entitlement_id: Mapped[str] = mapped_column(ForeignKey("training_entitlements.id"), index=True)
+    entry_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    minutes_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_type: Mapped[str | None] = mapped_column(String(40))
+    source_id: Mapped[str | None] = mapped_column(String(36))
+    reason: Mapped[str | None] = mapped_column(Text)
+    rule_version: Mapped[str | None] = mapped_column(String(40))
+    accounting_date: Mapped[date | None] = mapped_column(Date)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    reversal_of_entry_id: Mapped[str | None] = mapped_column(
+        ForeignKey("training_entitlement_entries.id")
+    )
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))

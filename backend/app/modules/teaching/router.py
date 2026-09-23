@@ -33,6 +33,7 @@ from app.core.models import (
     utc_now,
 )
 from app.core.pii import decrypt, encrypt, mask_phone
+from app.modules.finance.entitlements import apply_rollover_financial_treatment
 from app.modules.iam.router import Db, require_permission
 
 router = APIRouter(prefix="/api", tags=["teaching"])
@@ -249,6 +250,9 @@ class RolloverInput(BaseModel):
     effective_at: datetime
     reason: str = Field(min_length=1, max_length=500)
     financial_treatment: str = "CARRY_OVER"
+    rollover_minutes: int = Field(default=0, ge=0)
+    supplement_minutes: int = Field(default=0, ge=0)
+    supplement_amount_cent: int = Field(default=0, ge=0)
     idempotency_key: str = Field(min_length=8, max_length=100)
     version: int
 
@@ -923,8 +927,28 @@ def rollover(
         enrollment_id,
         {"source": source.id, "target": target.id},
     )
+    entitlement_result = apply_rollover_financial_treatment(
+        db,
+        user=user,
+        enrollment=enrollment,
+        membership=new,
+        treatment=data.financial_treatment,
+        idempotency_key=data.idempotency_key,
+        rollover_minutes=data.rollover_minutes,
+        supplement_minutes=data.supplement_minutes,
+        supplement_amount_cent=data.supplement_amount_cent,
+        reason=data.reason,
+        correlation_id=getattr(request.state, "correlation_id", None),
+    )
     db.commit()
-    return {"id": new.id, "idempotent": False}
+    return {
+        "id": new.id,
+        "idempotent": False,
+        "financial_treatment": entitlement_result["treatment"],
+        "financial_applied": entitlement_result.get("applied"),
+        "supplement_receivable_id": entitlement_result.get("receivable_id"),
+        "entitlement": entitlement_result["entitlement"],
+    }
 
 
 def valid_url(value: str) -> None:
